@@ -4,11 +4,23 @@
   // Set this to today's date
   "compatibility_date": "2026-07-29",
   "compatibility_flags": ["nodejs_compat"],
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  },
+  "d1_databases": [
+    {
+      "binding": "CHAT_HISTORY",
+      "database_name": "chat-history",
+      "database_id": "c0141bd5-172b-4481-9e59-eca19fed5e5b",
+      "migrations_dir": "migrations"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
-        "name": "CounterAgent",
-        "class_name": "CounterAgent"
+        "name": "ChatAgent",
+        "class_name": "ChatAgent"
       }
     ]
   },
@@ -16,6 +28,16 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["CounterAgent"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ChatAgent"],
+      "deleted_classes": ["CounterAgent"]
     }
-  ]
+  ],
+  "assets": {
+    "directory": "./dist/client",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/agents/*"]
+  }
 }
