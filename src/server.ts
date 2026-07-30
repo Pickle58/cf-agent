@@ -4,6 +4,7 @@ import {
   type OnChatMessageOptions
 } from "@cloudflare/ai-chat";
 import { callable, routeAgentRequest } from "agents";
+import { createQuickActionTools } from "agents/browser/ai";
 import {
   convertToModelMessages,
   type StreamTextOnFinishCallback,
@@ -26,6 +27,7 @@ export type AddServerResult =
  * Streaming chat agent. Durable Object SQLite holds the live transcript and
  * stream buffers; completed turns are mirrored into D1 for durable queries.
  * MCP servers are managed per conversation instance via addServer/removeServer.
+ * Browser Run Quick Actions let the model read pages as markdown, extract data, and list links.
  */
 export class ChatAgent extends AIChatAgent<Env> {
   maxPersistedMessages = 200;
@@ -67,19 +69,25 @@ export class ChatAgent extends AIChatAgent<Env> {
     _options?: OnChatMessageOptions
   ) {
     const workersai = createWorkersAI({ binding: this.env.AI });
+    const browserTools = createQuickActionTools({
+      browser: this.env.BROWSER,
+      actions: ["markdown", "extract", "links"]
+    });
     const mcpTools = this.mcp.getAITools();
+    const tools = {
+      ...browserTools,
+      ...mcpTools
+    };
 
     const result = streamText({
       model: workersai("@cf/zai-org/glm-4.7-flash"),
       system:
-        "You are a helpful assistant running on Cloudflare Workers AI. Be concise and clear. When MCP tools are available, use them when they help answer the user.",
+        "You are a helpful assistant running on Cloudflare Workers AI. Be concise and clear. You can read live web pages with the browser tools (markdown, extract, links). When MCP tools are available, use them when they help answer the user.",
       messages: await convertToModelMessages(this.messages),
-      tools: mcpTools,
-      stopWhen: stepCountIs(5),
-      // AIChatAgent types onFinish against ToolSet; MCP tools are a concrete ToolSet subtype.
-      onFinish: onFinish as unknown as StreamTextOnFinishCallback<
-        typeof mcpTools
-      >
+      tools,
+      stopWhen: stepCountIs(10),
+      // AIChatAgent types onFinish against ToolSet; merged tools are a concrete ToolSet subtype.
+      onFinish: onFinish as unknown as StreamTextOnFinishCallback<typeof tools>
     });
 
     return result.toUIMessageStreamResponse();

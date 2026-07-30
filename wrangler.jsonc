@@ -8,6 +8,10 @@
     "binding": "AI",
     "remote": true
   },
+  "browser": {
+    "binding": "BROWSER",
+    "remote": true
+  },
   "d1_databases": [
     {
       "binding": "CHAT_HISTORY",

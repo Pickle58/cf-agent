@@ -11,7 +11,7 @@ import {
 import { useAgent } from "agents/react";
 import type { MCPServersState } from "agents";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
-import type { UIMessage } from "ai";
+import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { AddServerResult, ChatAgent } from "./server";
 
 const CONVERSATION_KEY = "cf-agent-conversation-id";
@@ -34,6 +34,47 @@ function messageText(message: UIMessage): string {
     )
     .map((part) => part.text)
     .join("");
+}
+
+function toolCallStatuses(
+  message: UIMessage
+): Array<{ key: string; name: string; state: string }> {
+  const statuses: Array<{ key: string; name: string; state: string }> = [];
+
+  for (const part of message.parts) {
+    if (!isToolUIPart(part)) {
+      continue;
+    }
+
+    statuses.push({
+      key: part.toolCallId,
+      name: getToolName(part),
+      state: part.state
+    });
+  }
+
+  return statuses;
+}
+
+function toolStateLabel(state: string): string {
+  switch (state) {
+    case "input-streaming":
+      return "preparing";
+    case "input-available":
+      return "running";
+    case "output-available":
+      return "done";
+    case "output-error":
+      return "error";
+    case "output-denied":
+      return "denied";
+    case "approval-requested":
+      return "awaiting approval";
+    case "approval-responded":
+      return "approved";
+    default:
+      return state;
+  }
 }
 
 function openOAuthPopup(authUrl: string) {
@@ -356,13 +397,15 @@ function App() {
       <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
         {messages.length === 0 ? (
           <p className="rounded-xl border border-dashed border-zinc-300 p-6 text-sm text-zinc-500 dark:border-zinc-700">
-            Send a message to start chatting. Use <strong>MCP</strong> to
-            connect tool servers; reloading keeps this conversation ID.
+            Send a message to start chatting. Ask the agent to inspect a URL, or
+            use <strong>MCP</strong> to connect tool servers. Reloading keeps
+            this conversation ID.
           </p>
         ) : (
           messages.map((message) => {
             const text = messageText(message);
             const isUser = message.role === "user";
+            const tools = isUser ? [] : toolCallStatuses(message);
             return (
               <article
                 key={message.id}
@@ -375,7 +418,16 @@ function App() {
                 <div className="mb-1 text-[11px] font-medium uppercase opacity-70">
                   {message.role}
                 </div>
-                {text || (busy && !isUser ? "…" : "")}
+                {tools.length > 0 ? (
+                  <ul className="mb-2 space-y-1 font-mono text-[11px] opacity-80">
+                    {tools.map((tool) => (
+                      <li key={tool.key}>
+                        {tool.name} · {toolStateLabel(tool.state)}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {text || (busy && !isUser && tools.length === 0 ? "…" : "")}
               </article>
             );
           })
