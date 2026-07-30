@@ -1,0 +1,4 @@
+# Overrides the local core.autocrlf=true so Windows checkouts keep LF and don't
+# produce whole-file line-ending diffs that oxfmt and Linux CI disagree about.
+# text=auto still auto-detects binary files and leaves them untouched.
+* text=auto eol=lf
