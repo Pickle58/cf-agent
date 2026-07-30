@@ -2,7 +2,7 @@
   "name": "agent-starter",
   "version": "1.0.0",
   "private": true,
-  "description": "Starter template for building AI chat agents on Cloudflare",
+  "description": "AI chat agent on Cloudflare with D1-backed conversation history",
   "keywords": [
     "agents",
     "ai",
@@ -13,18 +13,20 @@
   "scripts": {
     "dev": "vite dev",
     "start": "vite dev",
-    "deploy": "vite build && wrangler deploy",
+    "deploy": "pnpm db:migrate:remote && vite build && wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply CHAT_HISTORY --local",
+    "db:migrate:remote": "wrangler d1 migrations apply CHAT_HISTORY --remote",
     "types": "wrangler types env.d.ts",
     "format": "oxfmt --write .",
     "lint": "oxlint src/",
     "check": "oxfmt --check . && oxlint src/ && tsc"
   },
   "dependencies": {
-    "@cloudflare/ai-chat": "^0.9.3",
+    "@cloudflare/ai-chat": "^0.10.1",
     "@cloudflare/kumo": "^2.6.0",
     "@phosphor-icons/react": "^2.1.10",
     "@streamdown/code": "^1.1.1",
-    "agents": "^0.17.4",
+    "agents": "^0.20.1",
     "ai": "^6.0.197",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
