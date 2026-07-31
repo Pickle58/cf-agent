@@ -12,9 +12,13 @@ import { useAgent } from "agents/react";
 import type { MCPServersState } from "agents";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
+import { Streamdown } from "streamdown";
+import { code } from "@streamdown/code";
 import type { AddServerResult, ChatAgent } from "./server";
 
 const CONVERSATION_KEY = "cf-agent-conversation-id";
+const READABLE_KEY = "cf-agent-readable-markdown";
+const streamdownPlugins = { code };
 
 function getOrCreateConversationId(): string {
   const existing = localStorage.getItem(CONVERSATION_KEY);
@@ -25,6 +29,14 @@ function getOrCreateConversationId(): string {
   const id = crypto.randomUUID();
   localStorage.setItem(CONVERSATION_KEY, id);
   return id;
+}
+
+function readReadablePreference(): boolean {
+  const stored = localStorage.getItem(READABLE_KEY);
+  if (stored === null) {
+    return true;
+  }
+  return stored === "true";
 }
 
 function messageText(message: UIMessage): string {
@@ -279,12 +291,21 @@ function App() {
   const [showMcp, setShowMcp] = useState(false);
   const [addingMcp, setAddingMcp] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
+  const [readable, setReadable] = useState(readReadablePreference);
   const [mcpState, setMcpState] = useState<MCPServersState>({
     servers: {},
     tools: [],
     prompts: [],
     resources: []
   });
+
+  function toggleReadable() {
+    setReadable((current) => {
+      const next = !current;
+      localStorage.setItem(READABLE_KEY, String(next));
+      return next;
+    });
+  }
 
   const agent = useAgent<ChatAgent>({
     agent: "ChatAgent",
@@ -373,6 +394,23 @@ function App() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={toggleReadable}
+            aria-pressed={readable}
+            title={
+              readable
+                ? "Showing rendered markdown. Click for raw."
+                : "Showing raw markdown. Click for readable."
+            }
+            className={`rounded-lg border px-3 py-1.5 text-sm dark:border-zinc-700 ${
+              readable
+                ? "border-blue-600 bg-blue-600 text-white"
+                : "border-zinc-300"
+            }`}
+          >
+            Readable
+          </button>
+          <button
+            type="button"
             onClick={() => setShowMcp(true)}
             className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700"
           >
@@ -402,14 +440,21 @@ function App() {
             this conversation ID.
           </p>
         ) : (
-          messages.map((message) => {
+          messages.map((message, index) => {
             const text = messageText(message);
             const isUser = message.role === "user";
             const tools = isUser ? [] : toolCallStatuses(message);
+            const renderMarkdown = readable && !isUser;
+            const isLastAssistant =
+              !isUser &&
+              index === messages.length - 1 &&
+              message.role === "assistant";
             return (
               <article
                 key={message.id}
-                className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+                className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                  renderMarkdown ? "" : "whitespace-pre-wrap"
+                } ${
                   isUser
                     ? "ml-auto bg-blue-600 text-white"
                     : "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
@@ -427,7 +472,22 @@ function App() {
                     ))}
                   </ul>
                 ) : null}
-                {text || (busy && !isUser && tools.length === 0 ? "…" : "")}
+                {text ? (
+                  renderMarkdown ? (
+                    <div className="assistant-markdown [&_*]:max-w-full">
+                      <Streamdown
+                        plugins={streamdownPlugins}
+                        isAnimating={busy && isLastAssistant}
+                      >
+                        {text}
+                      </Streamdown>
+                    </div>
+                  ) : (
+                    text
+                  )
+                ) : busy && !isUser && tools.length === 0 ? (
+                  "…"
+                ) : null}
               </article>
             );
           })
