@@ -3,7 +3,14 @@ import {
   type ChatResponseResult,
   type OnChatMessageOptions
 } from "@cloudflare/ai-chat";
-import { callable, routeAgentRequest } from "agents";
+import {
+  callable,
+  getAgentByName,
+  getCurrentAgent,
+  routeAgentRequest,
+  type Connection,
+  type ConnectionContext
+} from "agents";
 import { createQuickActionTools } from "agents/browser/ai";
 import {
   convertToModelMessages,
@@ -14,8 +21,18 @@ import {
 } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import {
+  agentInstanceName,
+  authenticateBearerRequest,
+  parseAgentName,
+  verifyClerkToken,
+  type ConnectionAuthState
+} from "./auth";
+import {
+  conversationOwnedByUser,
+  createConversation,
   deleteConversation,
   listConversationMessages,
+  listConversationsForUser,
   syncConversationMessages
 } from "./history";
 
@@ -26,12 +43,71 @@ export type AddServerResult =
 /**
  * Streaming chat agent. Durable Object SQLite holds the live transcript and
  * stream buffers; completed turns are mirrored into D1 for durable queries.
- * MCP servers are managed per conversation instance via addServer/removeServer.
- * Browser Run Quick Actions let the model read pages as markdown, extract data, and list links.
+ * Instance name is `{clerkUserId}:{conversationId}`; WebSocket clients must
+ * present a Clerk session JWT that matches the owner.
  */
 export class ChatAgent extends AIChatAgent<Env> {
   maxPersistedMessages = 200;
   waitForMcpConnections = true;
+
+  private ownerUserId(): string {
+    return parseAgentName(this.name).userId;
+  }
+
+  private conversationId(): string {
+    return parseAgentName(this.name).conversationId;
+  }
+
+  /**
+   * When a WebSocket caller is present, require connection auth state to match
+   * the Durable Object owner. Worker-side stub calls (no connection) are used
+   * only after the fetch handler has already authorized the user.
+   */
+  private requireCallerOwnsAgent(): string {
+    const ownerUserId = this.ownerUserId();
+    const { connection } = getCurrentAgent();
+    if (!connection) {
+      return ownerUserId;
+    }
+
+    const state = connection.state as ConnectionAuthState | undefined;
+    if (!state?.authenticated || state.userId !== ownerUserId) {
+      throw new Error("Unauthorized");
+    }
+
+    return ownerUserId;
+  }
+
+  override async onConnect(
+    connection: Connection,
+    ctx: ConnectionContext
+  ): Promise<void> {
+    try {
+      const url = new URL(ctx.request.url);
+      const token = url.searchParams.get("token");
+      if (!token) {
+        connection.close(4001, "Unauthorized");
+        return;
+      }
+
+      const userId = await verifyClerkToken(token, this.env);
+      const ownerUserId = this.ownerUserId();
+      if (userId !== ownerUserId) {
+        connection.close(4001, "Unauthorized");
+        return;
+      }
+
+      connection.setState({
+        authenticated: true,
+        userId
+      } satisfies ConnectionAuthState);
+    } catch {
+      connection.close(4001, "Unauthorized");
+      return;
+    }
+
+    await super.onConnect(connection, ctx);
+  }
 
   override async onStart(): Promise<void> {
     this.mcp.configureOAuthCallback({
@@ -57,7 +133,8 @@ export class ChatAgent extends AIChatAgent<Env> {
 
     const archived = await listConversationMessages(
       this.env.CHAT_HISTORY,
-      this.name
+      this.ownerUserId(),
+      this.conversationId()
     );
     if (archived.length > 0) {
       await this.persistMessages(archived);
@@ -103,12 +180,14 @@ export class ChatAgent extends AIChatAgent<Env> {
     try {
       await syncConversationMessages(
         this.env.CHAT_HISTORY,
-        this.name,
+        this.ownerUserId(),
+        this.conversationId(),
         this.messages
       );
     } catch (error) {
       console.error("Failed to archive conversation to D1", {
-        conversationId: this.name,
+        conversationId: this.conversationId(),
+        userId: this.ownerUserId(),
         error: error instanceof Error ? error.message : String(error)
       });
     }
@@ -119,6 +198,8 @@ export class ChatAgent extends AIChatAgent<Env> {
    */
   @callable()
   async addServer(name: string, url: string): Promise<AddServerResult> {
+    this.requireCallerOwnsAgent();
+
     const trimmedName = name.trim();
     const trimmedUrl = url.trim();
 
@@ -155,6 +236,8 @@ export class ChatAgent extends AIChatAgent<Env> {
    */
   @callable()
   async removeServer(serverId: string): Promise<{ ok: true }> {
+    this.requireCallerOwnsAgent();
+
     const id = serverId.trim();
     if (!id) {
       throw new Error("Server id is required");
@@ -164,20 +247,119 @@ export class ChatAgent extends AIChatAgent<Env> {
   }
 
   /**
-   * Clear both the live Durable Object transcript and the D1 archive.
-   * MCP server connections are left intact.
+   * Clear the live Durable Object transcript and D1 messages for this
+   * conversation. The conversation row is kept so it remains in the user's
+   * list. MCP server connections are left intact.
    */
   @callable()
   async clearConversation(): Promise<{ ok: true }> {
+    const userId = this.requireCallerOwnsAgent();
     this.resetTurnState();
     await this.persistMessages([]);
-    await deleteConversation(this.env.CHAT_HISTORY, this.name);
+    await syncConversationMessages(
+      this.env.CHAT_HISTORY,
+      userId,
+      this.conversationId(),
+      []
+    );
     return { ok: true };
   }
 }
 
+function json(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json" }
+  });
+}
+
+function errorJson(message: string, status: number): Response {
+  return json({ error: message }, status);
+}
+
+async function handleConversationsApi(
+  request: Request,
+  env: Env
+): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (!url.pathname.startsWith("/api/conversations")) {
+    return null;
+  }
+
+  let userId: string;
+  try {
+    userId = await authenticateBearerRequest(request, env);
+  } catch {
+    return errorJson("Unauthorized", 401);
+  }
+
+  if (url.pathname === "/api/conversations") {
+    if (request.method === "GET") {
+      const conversations = await listConversationsForUser(
+        env.CHAT_HISTORY,
+        userId
+      );
+      return json({ conversations });
+    }
+
+    if (request.method === "POST") {
+      const conversationId = crypto.randomUUID();
+      const conversation = await createConversation(
+        env.CHAT_HISTORY,
+        userId,
+        conversationId
+      );
+      return json({ conversation }, 201);
+    }
+
+    return errorJson("Method not allowed", 405);
+  }
+
+  const match = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
+  if (!match) {
+    return errorJson("Not found", 404);
+  }
+
+  const conversationId = decodeURIComponent(match[1]);
+
+  if (request.method === "DELETE") {
+    const owned = await conversationOwnedByUser(
+      env.CHAT_HISTORY,
+      userId,
+      conversationId
+    );
+    if (!owned) {
+      return errorJson("Not found", 404);
+    }
+
+    try {
+      const agent = await getAgentByName(
+        env.ChatAgent,
+        agentInstanceName(userId, conversationId)
+      );
+      await agent.clearConversation();
+    } catch (error) {
+      console.error("Best-effort DO clear failed", {
+        conversationId,
+        userId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    await deleteConversation(env.CHAT_HISTORY, userId, conversationId);
+    return json({ ok: true });
+  }
+
+  return errorJson("Method not allowed", 405);
+}
+
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext) {
+    const apiResponse = await handleConversationsApi(request, env);
+    if (apiResponse) {
+      return apiResponse;
+    }
+
     return (
       (await routeAgentRequest(request, env)) ??
       new Response("Not found", { status: 404 })
