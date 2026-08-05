@@ -4,6 +4,12 @@
   // Set this to today's date
   "compatibility_date": "2026-07-29",
   "compatibility_flags": ["nodejs_compat"],
+  // Comma-separated origins allowed in Clerk session JWT `azp` claims.
+  // Add your custom domain here before production deploy, e.g.:
+  // "AUTHORIZED_PARTIES": "http://localhost:5173,https://chat.example.com"
+  "vars": {
+    "AUTHORIZED_PARTIES": "http://localhost:5173,https://my-agent.pilkington.workers.dev"
+  },
   "ai": {
     "binding": "AI",
     "remote": true
@@ -39,9 +45,11 @@
       "deleted_classes": ["CounterAgent"]
     }
   ],
+  // When ready for your own domain:
+  // "routes": [{ "pattern": "chat.example.com", "custom_domain": true }],
   "assets": {
     "directory": "./dist/client",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/agents/*"]
+    "run_worker_first": ["/agents/*", "/api/*"]
   }
 }
